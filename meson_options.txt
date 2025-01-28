@@ -1,0 +1,9 @@
+option('install_themes',
+  type : 'boolean',
+  value : true,
+  description : 'Whether to install the included clock themes')
+
+option('themes_subdir',
+  type : 'string',
+  value : 'themes',
+  description : 'Subdirectory name for themes under the data install path')
