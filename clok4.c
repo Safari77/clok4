@@ -17,23 +17,23 @@
 
 // TODO optimize cairo redrawing, uses more CPU than GTK2 version (make clock huge and increase hz to test)
 
-#define M_PI 3.14159265358979323846
+#define M_PI     3.14159265358979323846
 #define APP_NAME "clok4"
 
 typedef enum {
-  CLOCK_DROP_SHADOW = 0,
-  CLOCK_FACE,
-  CLOCK_MARKS,
-  CLOCK_HOUR_HAND_SHADOW,
-  CLOCK_MINUTE_HAND_SHADOW,
-  CLOCK_SECOND_HAND_SHADOW,
-  CLOCK_HOUR_HAND,
-  CLOCK_MINUTE_HAND,
-  CLOCK_SECOND_HAND,
-  CLOCK_FACE_SHADOW,
-  CLOCK_GLASS,
-  CLOCK_FRAME,
-  CLOCK_ELEMENTS
+    CLOCK_DROP_SHADOW = 0,
+    CLOCK_FACE,
+    CLOCK_MARKS,
+    CLOCK_HOUR_HAND_SHADOW,
+    CLOCK_MINUTE_HAND_SHADOW,
+    CLOCK_SECOND_HAND_SHADOW,
+    CLOCK_HOUR_HAND,
+    CLOCK_MINUTE_HAND,
+    CLOCK_SECOND_HAND,
+    CLOCK_FACE_SHADOW,
+    CLOCK_GLASS,
+    CLOCK_FRAME,
+    CLOCK_ELEMENTS
 } LayerElement;
 
 static RsvgHandle *g_svg_handles[CLOCK_ELEMENTS];
@@ -43,8 +43,8 @@ static guint resized_width, resized_height;
 static gchar *theme;
 static int refresh_rate = 5;
 static gboolean userthemes;
-static GtkWidget      *g_window       = NULL;
-static GtkWidget      *g_drawing_area = NULL;
+static GtkWidget *g_window = NULL;
+static GtkWidget *g_drawing_area = NULL;
 
 /* Added: cache surface for static background */
 static cairo_surface_t *g_bg_cache = NULL;
@@ -52,60 +52,58 @@ static int g_bg_cache_width = 0, g_bg_cache_height = 0;
 static cairo_surface_t *bg_cache = NULL;
 static int bg_cache_w = 0, bg_cache_h = 0;
 
-static GTimer    *g_clock_timer = NULL;
+static GTimer *g_clock_timer = NULL;
 static GKeyFile *key_file;
-static gchar    *config_file;
-static gchar    *config_dir;
-static char     *themesystem = "/usr/share/clok4";
+static gchar *config_file;
+static gchar *config_dir;
+static char *themesystem = "/usr/share/clok4";
 
-static RsvgHandle* load_svg (const char *filename, gboolean needed) {
+static RsvgHandle *load_svg(const char *filename, gboolean needed) {
     GError *err = NULL;
-    char *full = g_strconcat(userthemes ? config_dir : themesystem, G_DIR_SEPARATOR_S,
-                             "themes", G_DIR_SEPARATOR_S,
+    char *full = g_strconcat(userthemes ? config_dir : themesystem, G_DIR_SEPARATOR_S, "themes", G_DIR_SEPARATOR_S,
                              theme, G_DIR_SEPARATOR_S, filename, NULL);
     RsvgHandle *h = rsvg_handle_new_from_file(full, &err);
     if (!h) {
         gchar errstring[4096];
-        g_snprintf(errstring, sizeof(errstring), "[%s] Cannot load SVG from %s: %s",
-                   needed ? "ERROR" : "WARNING", full, err ? err->message : "unknown error");
+        g_snprintf(errstring, sizeof(errstring), "[%s] Cannot load SVG from %s: %s", needed ? "ERROR" : "WARNING", full,
+                   err ? err->message : "unknown error");
         g_warning(errstring);
         g_clear_error(&err);
-        if (needed) exit(EXIT_FAILURE);
+        if (needed)
+            exit(EXIT_FAILURE);
     }
     g_free(full);
     return h;
 }
 
-static gboolean tick (gpointer user_data) {
-    //fprintf(stderr, "tick\n");
+static gboolean tick(gpointer user_data) {
+    // fprintf(stderr, "tick\n");
     gtk_widget_queue_draw(g_drawing_area);
     return TRUE;
 }
 
-static void load_transparent_css (void) {
-    GtkCssProvider *provider = gtk_css_provider_new ();
+static void load_transparent_css(void) {
+    GtkCssProvider *provider = gtk_css_provider_new();
     const gchar *css = "window, box, drawingarea { background-color: transparent; }";
-    gtk_css_provider_load_from_string (provider, css);
-    gtk_style_context_add_provider_for_display (
-        gdk_display_get_default (),
-        GTK_STYLE_PROVIDER (provider),
-        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    g_object_unref (provider);
+    gtk_css_provider_load_from_string(provider, css);
+    gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+                                               GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
 }
 
 static void load_clock_svgs(void) {
-    g_svg_handles[CLOCK_DROP_SHADOW]        = load_svg("clock-drop-shadow.svg", true);
-    g_svg_handles[CLOCK_FACE]               = load_svg("clock-face.svg", true);
-    g_svg_handles[CLOCK_FACE_SHADOW]        = load_svg("clock-face-shadow.svg", false);
-    g_svg_handles[CLOCK_MARKS]              = load_svg("clock-marks.svg", false);
-    g_svg_handles[CLOCK_MINUTE_HAND]        = load_svg("clock-minute-hand.svg", true);
+    g_svg_handles[CLOCK_DROP_SHADOW] = load_svg("clock-drop-shadow.svg", true);
+    g_svg_handles[CLOCK_FACE] = load_svg("clock-face.svg", true);
+    g_svg_handles[CLOCK_FACE_SHADOW] = load_svg("clock-face-shadow.svg", false);
+    g_svg_handles[CLOCK_MARKS] = load_svg("clock-marks.svg", false);
+    g_svg_handles[CLOCK_MINUTE_HAND] = load_svg("clock-minute-hand.svg", true);
     g_svg_handles[CLOCK_MINUTE_HAND_SHADOW] = load_svg("clock-minute-hand-shadow.svg", false);
-    g_svg_handles[CLOCK_SECOND_HAND]        = load_svg("clock-second-hand.svg", false);
+    g_svg_handles[CLOCK_SECOND_HAND] = load_svg("clock-second-hand.svg", false);
     g_svg_handles[CLOCK_SECOND_HAND_SHADOW] = load_svg("clock-second-hand-shadow.svg", false);
-    g_svg_handles[CLOCK_HOUR_HAND]          = load_svg("clock-hour-hand.svg", true);
-    g_svg_handles[CLOCK_HOUR_HAND_SHADOW]   = load_svg("clock-hour-hand-shadow.svg", false);
-    g_svg_handles[CLOCK_GLASS]              = load_svg("clock-glass.svg", false);
-    g_svg_handles[CLOCK_FRAME]              = load_svg("clock-frame.svg", false);
+    g_svg_handles[CLOCK_HOUR_HAND] = load_svg("clock-hour-hand.svg", true);
+    g_svg_handles[CLOCK_HOUR_HAND_SHADOW] = load_svg("clock-hour-hand-shadow.svg", false);
+    g_svg_handles[CLOCK_GLASS] = load_svg("clock-glass.svg", false);
+    g_svg_handles[CLOCK_FRAME] = load_svg("clock-frame.svg", false);
 
     if (g_svg_handles[CLOCK_DROP_SHADOW]) {
         gdouble w, h;
@@ -115,15 +113,15 @@ static void load_clock_svgs(void) {
     }
 }
 
-static void on_quit_action (GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+static void on_quit_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     g_application_quit(G_APPLICATION(user_data));
 }
 
 /* Draw all static layers (drop shadow, face, marks, face-shadow, glass, frame) */
 static void draw_static_layers(cairo_t *cr, int width, int height) {
     cairo_save(cr);
-    double sx = (double) width  / clock_width;
-    double sy = (double) height / clock_height;
+    double sx = (double)width / clock_width;
+    double sy = (double)height / clock_height;
     cairo_scale(cr, sx, sy);
 
     /* Clear to transparent */
@@ -152,12 +150,8 @@ static void draw_static_layers(cairo_t *cr, int width, int height) {
     cairo_restore(cr);
 }
 
-static void
-ensure_bg_cache(cairo_t *cr, int width, int height)
-{
-    if (bg_cache &&
-        width == bg_cache_w &&
-        height == bg_cache_h) {
+static void ensure_bg_cache(cairo_t *cr, int width, int height) {
+    if (bg_cache && width == bg_cache_w && height == bg_cache_h) {
         // Already valid; no need to rebuild
         return;
     }
@@ -165,11 +159,7 @@ ensure_bg_cache(cairo_t *cr, int width, int height)
     if (bg_cache)
         cairo_surface_destroy(bg_cache);
 
-    bg_cache = cairo_surface_create_similar(
-        cairo_get_target(cr),
-        CAIRO_CONTENT_COLOR_ALPHA,
-        width,
-        height);
+    bg_cache = cairo_surface_create_similar(cairo_get_target(cr), CAIRO_CONTENT_COLOR_ALPHA, width, height);
     bg_cache_w = width;
     bg_cache_h = height;
 
@@ -187,30 +177,30 @@ static void draw_clock_hands(cairo_t *cr, int width, int height) {
     struct tm tm;
     localtime_r(&time_sec, &tm);
 
-    int hour      = tm.tm_hour;
-    int minute    = tm.tm_min;
+    int hour = tm.tm_hour;
+    int minute = tm.tm_min;
     double second = tm.tm_sec + ((double)ts.tv_nsec / 1e9);
 
-    double angle_hour   = (hour % 12)*30.0 + (minute*0.5) + (second*(0.5/60.0));
-    double angle_minute = minute*6.0 + (second*0.1);
-    double angle_second = second*6.0;
+    double angle_hour = (hour % 12) * 30.0 + (minute * 0.5) + (second * (0.5 / 60.0));
+    double angle_minute = minute * 6.0 + (second * 0.1);
+    double angle_second = second * 6.0;
 
     cairo_save(cr);
     cairo_translate(cr, width / 2.0, height / 2.0);
-    cairo_scale(cr, (double) width / clock_width, (double) height / clock_height);
-    cairo_rotate(cr, -M_PI/2.0);
+    cairo_scale(cr, (double)width / clock_width, (double)height / clock_height);
+    cairo_rotate(cr, -M_PI / 2.0);
 
     /* Hour hand + shadow */
     if (g_svg_handles[CLOCK_HOUR_HAND_SHADOW]) {
         cairo_save(cr);
         cairo_translate(cr, 1, 1);
-        cairo_rotate(cr, angle_hour * (M_PI/180.0));
+        cairo_rotate(cr, angle_hour * (M_PI / 180.0));
         rsvg_handle_render_cairo(g_svg_handles[CLOCK_HOUR_HAND_SHADOW], cr);
         cairo_restore(cr);
     }
     if (g_svg_handles[CLOCK_HOUR_HAND]) {
         cairo_save(cr);
-        cairo_rotate(cr, angle_hour * (M_PI/180.0));
+        cairo_rotate(cr, angle_hour * (M_PI / 180.0));
         rsvg_handle_render_cairo(g_svg_handles[CLOCK_HOUR_HAND], cr);
         cairo_restore(cr);
     }
@@ -219,13 +209,13 @@ static void draw_clock_hands(cairo_t *cr, int width, int height) {
     if (g_svg_handles[CLOCK_MINUTE_HAND_SHADOW]) {
         cairo_save(cr);
         cairo_translate(cr, 1, 1);
-        cairo_rotate(cr, angle_minute * (M_PI/180.0));
+        cairo_rotate(cr, angle_minute * (M_PI / 180.0));
         rsvg_handle_render_cairo(g_svg_handles[CLOCK_MINUTE_HAND_SHADOW], cr);
         cairo_restore(cr);
     }
     if (g_svg_handles[CLOCK_MINUTE_HAND]) {
         cairo_save(cr);
-        cairo_rotate(cr, angle_minute * (M_PI/180.0));
+        cairo_rotate(cr, angle_minute * (M_PI / 180.0));
         rsvg_handle_render_cairo(g_svg_handles[CLOCK_MINUTE_HAND], cr);
         cairo_restore(cr);
     }
@@ -234,13 +224,13 @@ static void draw_clock_hands(cairo_t *cr, int width, int height) {
     if (g_svg_handles[CLOCK_SECOND_HAND_SHADOW]) {
         cairo_save(cr);
         cairo_translate(cr, 1, 1);
-        cairo_rotate(cr, angle_second * (M_PI/180.0));
+        cairo_rotate(cr, angle_second * (M_PI / 180.0));
         rsvg_handle_render_cairo(g_svg_handles[CLOCK_SECOND_HAND_SHADOW], cr);
         cairo_restore(cr);
     }
     if (g_svg_handles[CLOCK_SECOND_HAND]) {
         cairo_save(cr);
-        cairo_rotate(cr, angle_second * (M_PI/180.0));
+        cairo_rotate(cr, angle_second * (M_PI / 180.0));
         rsvg_handle_render_cairo(g_svg_handles[CLOCK_SECOND_HAND], cr);
         cairo_restore(cr);
     }
@@ -263,10 +253,7 @@ static void build_bg_cache_if_needed(cairo_t *cr, int width, int height) {
     g_bg_cache_height = height;
 
     /* Create a similar surface to the final target, with alpha for transparency */
-    g_bg_cache = cairo_surface_create_similar(cairo_get_target(cr),
-                                              CAIRO_CONTENT_COLOR_ALPHA,
-                                              width,
-                                              height);
+    g_bg_cache = cairo_surface_create_similar(cairo_get_target(cr), CAIRO_CONTENT_COLOR_ALPHA, width, height);
 
     /* Draw static layers into the background cache */
     cairo_t *bg_cr = cairo_create(g_bg_cache);
@@ -274,13 +261,7 @@ static void build_bg_cache_if_needed(cairo_t *cr, int width, int height) {
     cairo_destroy(bg_cr);
 }
 
-static void
-on_draw(GtkDrawingArea *area,
-        cairo_t        *cr,
-        int             width,
-        int             height,
-        gpointer        user_data)
-{
+static void on_draw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data) {
     // Ensure background cache is up to date
     ensure_bg_cache(cr, width, height);
 
@@ -323,7 +304,7 @@ static int process_config(int argc, char **argv) {
         g_printerr("Failed to get user config directory\n");
         return 1;
     }
-    config_dir  = g_build_path(G_DIR_SEPARATOR_S, user_config_dir, APP_NAME, NULL);
+    config_dir = g_build_path(G_DIR_SEPARATOR_S, user_config_dir, APP_NAME, NULL);
     config_file = g_build_path(G_DIR_SEPARATOR_S, config_dir, APP_NAME ".conf", NULL);
     if (!g_file_test(config_dir, G_FILE_TEST_IS_DIR)) {
         if (-1 == g_mkdir_with_parents(config_dir, 0700)) {
@@ -342,16 +323,20 @@ static int process_config(int argc, char **argv) {
     g_clear_error(&error);
 
     clock_width = g_key_file_get_integer(key_file, "Settings", "width", NULL);
-    if (!clock_width) clock_width = 400;
+    if (!clock_width)
+        clock_width = 400;
     clock_height = g_key_file_get_integer(key_file, "Settings", "height", NULL);
-    if (!clock_height) clock_height = 400;
+    if (!clock_height)
+        clock_height = 400;
 
     newtheme = g_key_file_get_string(key_file, "Settings", "theme", NULL);
-    if (theme) g_free(theme);
+    if (theme)
+        g_free(theme);
     theme = newtheme ? newtheme : g_strdup("default");
 
     refresh_rate = g_key_file_get_integer(key_file, "Settings", "hz", NULL);
-    if (!refresh_rate) refresh_rate = 10;
+    if (!refresh_rate)
+        refresh_rate = 10;
 
     context = g_option_context_new("- Save configuration for " APP_NAME);
     g_option_context_add_main_entries(context, entries, NULL);
@@ -368,9 +353,7 @@ static int process_config(int argc, char **argv) {
     return 0;
 }
 
-static void
-on_app_activate_cb (GtkApplication *app, gpointer user_data)
-{
+static void on_app_activate_cb(GtkApplication *app, gpointer user_data) {
     load_transparent_css();
     g_window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(g_window), APP_NAME);
@@ -404,8 +387,7 @@ on_app_activate_cb (GtkApplication *app, gpointer user_data)
 
 int main(int argc, char **argv) {
     tzset();
-    GtkApplication *app = gtk_application_new(APP_NAME ".CairoClock",
-                                              G_APPLICATION_DEFAULT_FLAGS);
+    GtkApplication *app = gtk_application_new(APP_NAME ".CairoClock", G_APPLICATION_DEFAULT_FLAGS);
 
     GSimpleAction *quit_action = g_simple_action_new("quit", NULL);
     g_signal_connect(quit_action, "activate", G_CALLBACK(on_quit_action), app);
@@ -415,10 +397,8 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    const char *quit_accel[2] = { "<Control>q", NULL };
-    gtk_application_set_accels_for_action(GTK_APPLICATION(app),
-                                          "app.quit",
-                                          quit_accel);
+    const char *quit_accel[2] = {"<Control>q", NULL};
+    gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.quit", quit_accel);
     g_signal_connect(app, "activate", G_CALLBACK(on_app_activate_cb), NULL);
     int status = g_application_run(G_APPLICATION(app), argc, argv);
 
