@@ -39,7 +39,7 @@ typedef enum {
 static RsvgHandle *g_svg_handles[CLOCK_ELEMENTS];
 
 static guint clock_width = 400, clock_height = 400;
-static guint resized_width, resized_height;
+static int resized_width, resized_height;
 static gchar *theme;
 static int refresh_rate = 5;
 static gboolean userthemes;
@@ -349,7 +349,6 @@ static int process_config(int argc, char **argv) {
     }
     g_option_context_free(context);
 
-    save_key_file(key_file);
     return 0;
 }
 
@@ -401,6 +400,13 @@ int main(int argc, char **argv) {
     gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.quit", quit_accel);
     g_signal_connect(app, "activate", G_CALLBACK(on_app_activate_cb), NULL);
     int status = g_application_run(G_APPLICATION(app), argc, argv);
+
+    if (g_window) {
+        gtk_window_get_default_size(GTK_WINDOW(g_window), &resized_width, &resized_height);
+    } else {
+        resized_width = clock_width;
+        resized_height = clock_height;
+    }
 
     if (g_clock_timer) {
         g_timer_destroy(g_clock_timer);
