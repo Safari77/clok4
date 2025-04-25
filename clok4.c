@@ -51,9 +51,6 @@ static gboolean userthemes;
 static GtkWidget *g_window = NULL;
 static GtkWidget *g_drawing_area = NULL;
 
-/* Added: cache surface for static background */
-static cairo_surface_t *g_bg_cache = NULL;
-static int g_bg_cache_width = 0, g_bg_cache_height = 0;
 static cairo_surface_t *bg_cache = NULL;
 static int bg_cache_w = 0, bg_cache_h = 0;
 
@@ -294,29 +291,6 @@ static void draw_clock_hands(cairo_t *cr, int width, int height) {
     cairo_restore(cr); // Restore overall state from before hands
 }
 
-/* ADDED: Build or reuse the cached background surface */
-static void build_bg_cache_if_needed(cairo_t *cr, int width, int height) {
-    if (g_bg_cache && (width == g_bg_cache_width) && (height == g_bg_cache_height)) {
-        /* Size didn’t change, no rebuild needed. */
-        return;
-    }
-    if (g_bg_cache) {
-        cairo_surface_destroy(g_bg_cache);
-        g_bg_cache = NULL;
-    }
-
-    g_bg_cache_width = width;
-    g_bg_cache_height = height;
-
-    /* Create a similar surface to the final target, with alpha for transparency */
-    g_bg_cache = cairo_surface_create_similar(cairo_get_target(cr), CAIRO_CONTENT_COLOR_ALPHA, width, height);
-
-    /* Draw static layers into the background cache */
-    cairo_t *bg_cr = cairo_create(g_bg_cache);
-    draw_static_layers(bg_cr, width, height);
-    cairo_destroy(bg_cr);
-}
-
 static void on_draw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data) {
     // Ensure background cache is up to date
     ensure_bg_cache(cr, width, height);
@@ -474,10 +448,6 @@ int main(int argc, char **argv) {
     g_free(config_file);
 
     /* Cleanup cached surface */
-    if (g_bg_cache) {
-        cairo_surface_destroy(g_bg_cache);
-        g_bg_cache = NULL;
-    }
     if (bg_cache) {
         cairo_surface_destroy(bg_cache);
         bg_cache = NULL;
