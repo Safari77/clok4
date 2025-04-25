@@ -48,6 +48,7 @@ static int resized_width, resized_height;
 static gchar *theme;
 static int refresh_rate = 5;
 static gboolean userthemes;
+static gboolean dont_show_seconds;
 static GtkWidget *g_window = NULL;
 static GtkWidget *g_drawing_area = NULL;
 
@@ -100,8 +101,10 @@ static void load_clock_svgs(void) {
     g_svg_handles[CLOCK_MARKS] = load_svg("clock-marks.svg", false);
     g_svg_handles[CLOCK_MINUTE_HAND] = load_svg("clock-minute-hand.svg", true);
     g_svg_handles[CLOCK_MINUTE_HAND_SHADOW] = load_svg("clock-minute-hand-shadow.svg", false);
-    g_svg_handles[CLOCK_SECOND_HAND] = load_svg("clock-second-hand.svg", false);
-    g_svg_handles[CLOCK_SECOND_HAND_SHADOW] = load_svg("clock-second-hand-shadow.svg", false);
+    if (!dont_show_seconds) {
+        g_svg_handles[CLOCK_SECOND_HAND] = load_svg("clock-second-hand.svg", false);
+        g_svg_handles[CLOCK_SECOND_HAND_SHADOW] = load_svg("clock-second-hand-shadow.svg", false);
+    }
     g_svg_handles[CLOCK_HOUR_HAND] = load_svg("clock-hour-hand.svg", true);
     g_svg_handles[CLOCK_HOUR_HAND_SHADOW] = load_svg("clock-hour-hand-shadow.svg", false);
     g_svg_handles[CLOCK_GLASS] = load_svg("clock-glass.svg", false);
@@ -326,6 +329,7 @@ static int process_config(int argc, char **argv) {
         {"theme", 't', 0, G_OPTION_ARG_STRING, &theme, "Theme name", "THEME"},
         {"userthemes", 'u', 0, G_OPTION_ARG_NONE, &userthemes, "Use user theme", "USERTHEMES"},
         {"hz", 'z', 0, G_OPTION_ARG_INT, &refresh_rate, "Refresh rate (hz)", "HZ"},
+        {"noseconds", 'n', 0, G_OPTION_ARG_NONE, &dont_show_seconds, "Don’t show second hand", "NOSECONDS"},
         {NULL}
     };
 
