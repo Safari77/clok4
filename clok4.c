@@ -422,6 +422,10 @@ int main(int argc, char **argv) {
         cairo_surface_destroy(g_bg_cache);
         g_bg_cache = NULL;
     }
+    if (bg_cache) {
+        cairo_surface_destroy(bg_cache);
+        bg_cache = NULL;
+    }
 
     /* Cleanup all RsvgHandles */
     for (int i = 0; i < CLOCK_ELEMENTS; i++) {
