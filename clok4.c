@@ -36,6 +36,11 @@ typedef enum {
     CLOCK_ELEMENTS
 } LayerElement;
 
+typedef struct {
+    LayerElement element; // The enum value (index into g_svg_handles)
+    const char* name;    // String name for logging/debugging
+} SvgLayerInfo;
+
 static RsvgHandle *g_svg_handles[CLOCK_ELEMENTS];
 
 static guint clock_width = 400, clock_height = 400;
@@ -119,34 +124,47 @@ static void on_quit_action(GSimpleAction *action, GVariant *parameter, gpointer 
 
 /* Draw all static layers (drop shadow, face, marks, face-shadow, glass, frame) */
 static void draw_static_layers(cairo_t *cr, int width, int height) {
+    // Define the drawing order for static layers
+    static const SvgLayerInfo static_layers_info[] = {
+        { CLOCK_DROP_SHADOW, "CLOCK_DROP_SHADOW" },
+        { CLOCK_FACE,        "CLOCK_FACE"        },
+        { CLOCK_MARKS,       "CLOCK_MARKS"       },
+        // Note: Shadows/Hands are drawn in draw_clock_hands
+        { CLOCK_FACE_SHADOW, "CLOCK_FACE_SHADOW" },
+        { CLOCK_GLASS,       "CLOCK_GLASS"       },
+        { CLOCK_FRAME,       "CLOCK_FRAME"       }
+    };
+
     cairo_save(cr);
     double sx = (double)width / clock_width;
     double sy = (double)height / clock_height;
-    cairo_scale(cr, sx, sy);
+    cairo_scale(cr, sx, sy); // Keep the scaling
 
     /* Clear to transparent */
     cairo_set_source_rgba(cr, 1, 1, 1, 0);
     cairo_paint(cr);
 
-    if (g_svg_handles[CLOCK_DROP_SHADOW])
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_DROP_SHADOW], cr);
+    GError *render_error = NULL;
+    gboolean success;
+    RsvgRectangle viewport = { 0.0, 0.0, (double)clock_width, (double)clock_height };
 
-    if (g_svg_handles[CLOCK_FACE])
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_FACE], cr);
+    // Loop through the static layers
+    for (size_t i = 0; i < G_N_ELEMENTS(static_layers_info); ++i) {
+        const SvgLayerInfo* info = &static_layers_info[i];
+        RsvgHandle* handle = g_svg_handles[info->element];
 
-    if (g_svg_handles[CLOCK_MARKS])
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_MARKS], cr);
+        if (handle) {
+            success = rsvg_handle_render_document(handle, cr, &viewport, &render_error);
+            if (!success) {
+                g_warning("Failed to render %s: %s",
+                          info->name, // Use the name from the struct
+                          render_error ? render_error->message : "Unknown error (GError not set)");
+                g_clear_error(&render_error); // Clear error immediately after logging
+            }
+        }
+    }
 
-    /* Top layers: face-shadow, glass, frame */
-    if (g_svg_handles[CLOCK_FACE_SHADOW])
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_FACE_SHADOW], cr);
-
-    if (g_svg_handles[CLOCK_GLASS])
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_GLASS], cr);
-
-    if (g_svg_handles[CLOCK_FRAME])
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_FRAME], cr);
-
+    g_clear_error(&render_error); // Ensure cleared at the end too
     cairo_restore(cr);
 }
 
@@ -156,8 +174,9 @@ static void ensure_bg_cache(cairo_t *cr, int width, int height) {
         return;
     }
     // Rebuild the cached background surface
-    if (bg_cache)
+    if (bg_cache) {
         cairo_surface_destroy(bg_cache);
+    }
 
     bg_cache = cairo_surface_create_similar(cairo_get_target(cr), CAIRO_CONTENT_COLOR_ALPHA, width, height);
     bg_cache_w = width;
@@ -170,72 +189,109 @@ static void ensure_bg_cache(cairo_t *cr, int width, int height) {
 }
 
 static void draw_clock_hands(cairo_t *cr, int width, int height) {
+    // Define the drawing order for hands and their shadows
+    // Shadows are drawn first, then the corresponding hands,
+    // layer by layer (e.g., all shadows, then all hands is also possible)
+    static const SvgLayerInfo hand_layers_info[] = {
+        // Order matters for correct layering!
+        { CLOCK_HOUR_HAND_SHADOW,   "CLOCK_HOUR_HAND_SHADOW"   },
+        { CLOCK_MINUTE_HAND_SHADOW, "CLOCK_MINUTE_HAND_SHADOW" },
+        { CLOCK_SECOND_HAND_SHADOW, "CLOCK_SECOND_HAND_SHADOW" },
+        { CLOCK_HOUR_HAND,          "CLOCK_HOUR_HAND"          },
+        { CLOCK_MINUTE_HAND,        "CLOCK_MINUTE_HAND"        },
+        { CLOCK_SECOND_HAND,        "CLOCK_SECOND_HAND"        }
+    };
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    time_t time_sec = ts.tv_sec;
-
     struct tm tm;
-    localtime_r(&time_sec, &tm);
+    time_t time_sec;
 
+    clock_gettime(CLOCK_REALTIME, &ts);
+    time_sec = ts.tv_sec;
+    localtime_r(&time_sec, &tm);
     int hour = tm.tm_hour;
     int minute = tm.tm_min;
     double second = tm.tm_sec + ((double)ts.tv_nsec / 1e9);
 
-    double angle_hour = (hour % 12) * 30.0 + (minute * 0.5) + (second * (0.5 / 60.0));
-    double angle_minute = minute * 6.0 + (second * 0.1);
-    double angle_second = second * 6.0;
+    // Calculate angles in degrees
+    double angle_hour_deg = (hour % 12) * 30.0 + (minute * 0.5) + (second * (0.5 / 60.0));
+    double angle_minute_deg = minute * 6.0 + (second * 0.1);
+    double angle_second_deg = second * 6.0;
 
-    cairo_save(cr);
+    // Convert angles to radians once
+    double angle_hour_rad = angle_hour_deg * (M_PI / 180.0);
+    double angle_min_rad = angle_minute_deg * (M_PI / 180.0);
+    double angle_sec_rad = angle_second_deg * (M_PI / 180.0);
+
+    cairo_save(cr); // Save overall state before hands
     cairo_translate(cr, width / 2.0, height / 2.0);
-    cairo_scale(cr, (double)width / clock_width, (double)height / clock_height);
-    cairo_rotate(cr, -M_PI / 2.0);
+    cairo_scale(cr, (double)width / clock_width, (double)height / clock_height); // Keep the scaling
+    cairo_rotate(cr, -M_PI / 2.0); // Initial rotation for clock orientation
 
-    /* Hour hand + shadow */
-    if (g_svg_handles[CLOCK_HOUR_HAND_SHADOW]) {
-        cairo_save(cr);
-        cairo_translate(cr, 1, 1);
-        cairo_rotate(cr, angle_hour * (M_PI / 180.0));
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_HOUR_HAND_SHADOW], cr);
-        cairo_restore(cr);
-    }
-    if (g_svg_handles[CLOCK_HOUR_HAND]) {
-        cairo_save(cr);
-        cairo_rotate(cr, angle_hour * (M_PI / 180.0));
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_HOUR_HAND], cr);
-        cairo_restore(cr);
+    GError *render_error = NULL;
+    gboolean success;
+    RsvgRectangle viewport = { 0.0, 0.0, (double)clock_width, (double)clock_height };
+
+    // Loop through the hand/shadow layers
+    for (size_t i = 0; i < G_N_ELEMENTS(hand_layers_info); ++i) {
+        const SvgLayerInfo* info = &hand_layers_info[i];
+        RsvgHandle* handle = g_svg_handles[info->element];
+
+        if (handle) {
+            double current_angle_rad = 0;
+            gboolean is_shadow = FALSE;
+
+            // Determine the correct angle and shadow status for this layer
+            switch (info->element) {
+                case CLOCK_HOUR_HAND_SHADOW:
+                    current_angle_rad = angle_hour_rad;
+                    is_shadow = TRUE;
+                    break;
+                case CLOCK_HOUR_HAND:
+                    current_angle_rad = angle_hour_rad;
+                    is_shadow = FALSE;
+                    break;
+                case CLOCK_MINUTE_HAND_SHADOW:
+                    current_angle_rad = angle_min_rad;
+                    is_shadow = TRUE;
+                    break;
+                case CLOCK_MINUTE_HAND:
+                    current_angle_rad = angle_min_rad;
+                    is_shadow = FALSE;
+                    break;
+                case CLOCK_SECOND_HAND_SHADOW:
+                    current_angle_rad = angle_sec_rad;
+                    is_shadow = TRUE;
+                    break;
+                case CLOCK_SECOND_HAND:
+                    current_angle_rad = angle_sec_rad;
+                    is_shadow = FALSE;
+                    break;
+                default: // Skip any unexpected elements
+                    continue;
+            }
+
+            // Perform drawing operations for this layer
+            cairo_save(cr); // Save state before drawing this specific layer
+
+            if (is_shadow) {
+                cairo_translate(cr, 1, 1); // Apply shadow offset
+            }
+            cairo_rotate(cr, current_angle_rad); // Apply rotation for this hand/shadow
+
+            success = rsvg_handle_render_document(handle, cr, &viewport, &render_error);
+            if (!success) {
+                g_warning("Failed to render %s: %s",
+                          info->name, // Use the name from the struct
+                          render_error ? render_error->message : "Unknown error (GError not set)");
+                g_clear_error(&render_error); // Clear error immediately
+            }
+
+            cairo_restore(cr); // Restore state after drawing this layer
+        }
     }
 
-    /* Minute hand + shadow */
-    if (g_svg_handles[CLOCK_MINUTE_HAND_SHADOW]) {
-        cairo_save(cr);
-        cairo_translate(cr, 1, 1);
-        cairo_rotate(cr, angle_minute * (M_PI / 180.0));
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_MINUTE_HAND_SHADOW], cr);
-        cairo_restore(cr);
-    }
-    if (g_svg_handles[CLOCK_MINUTE_HAND]) {
-        cairo_save(cr);
-        cairo_rotate(cr, angle_minute * (M_PI / 180.0));
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_MINUTE_HAND], cr);
-        cairo_restore(cr);
-    }
-
-    /* Second hand + shadow */
-    if (g_svg_handles[CLOCK_SECOND_HAND_SHADOW]) {
-        cairo_save(cr);
-        cairo_translate(cr, 1, 1);
-        cairo_rotate(cr, angle_second * (M_PI / 180.0));
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_SECOND_HAND_SHADOW], cr);
-        cairo_restore(cr);
-    }
-    if (g_svg_handles[CLOCK_SECOND_HAND]) {
-        cairo_save(cr);
-        cairo_rotate(cr, angle_second * (M_PI / 180.0));
-        rsvg_handle_render_cairo(g_svg_handles[CLOCK_SECOND_HAND], cr);
-        cairo_restore(cr);
-    }
-
-    cairo_restore(cr);
+    g_clear_error(&render_error); // Ensure cleared at the end too
+    cairo_restore(cr); // Restore overall state from before hands
 }
 
 /* ADDED: Build or reuse the cached background surface */
