@@ -18,6 +18,10 @@
 #define M_PI     3.14159265358979323846
 #define APP_NAME "clok4"
 
+// Shadow offset in theme units, same as original cairo-clock (light source at top-right)
+#define SHADOW_OFFSET_X (-0.75)
+#define SHADOW_OFFSET_Y 0.75
+
 typedef enum {
     CLOCK_DROP_SHADOW = 0,
     CLOCK_FACE,
@@ -35,8 +39,10 @@ typedef enum {
 } LayerElement;
 
 static RsvgHandle *g_svg_handles[CLOCK_ELEMENTS];
-static guint clock_width = 400, clock_height = 400;
+static int clock_width = 400, clock_height = 400;  // window size (config file / command line)
+static int theme_width = 100, theme_height = 100;  // theme canvas size (SVG intrinsic size)
 static int resized_width, resized_height;
+static gboolean size_saved;
 static gchar *theme;
 static int refresh_rate = 5;
 static gboolean userthemes;
@@ -49,9 +55,11 @@ static gchar *config_file;
 static gchar *config_dir;
 static char *themesystem = "/usr/share/clok4";
 
-// Cached background texture
+// Cached background/foreground textures; face shadow, glass and frame are
+// drawn above the hands, like in the original cairo-clock
 static GdkTexture *bg_cache_texture = NULL;
-static int bg_cache_w = 0, bg_cache_h = 0;
+static GdkTexture *fg_cache_texture = NULL;
+static int cache_w = 0, cache_h = 0, cache_scale = 0;
 
 // Forward declarations
 #define CLOCK_TYPE_WIDGET (clock_widget_get_type())
@@ -81,10 +89,53 @@ static RsvgHandle *load_svg(const char *filename, gboolean needed) {
     return h;
 }
 
-static gboolean tick(gpointer user_data) {
-    if (g_clock_widget)
-        gtk_widget_queue_draw(g_clock_widget);
-    return TRUE;
+// Load SVGs once; called from activate so a broken theme fails before the window is shown
+static void load_all_svgs(void) {
+    static gboolean svgs_loaded = FALSE;
+    if (svgs_loaded)
+        return;
+
+    g_svg_handles[CLOCK_DROP_SHADOW] = load_svg("clock-drop-shadow.svg", TRUE);
+    g_svg_handles[CLOCK_FACE] = load_svg("clock-face.svg", TRUE);
+    g_svg_handles[CLOCK_FACE_SHADOW] = load_svg("clock-face-shadow.svg", FALSE);
+    g_svg_handles[CLOCK_MARKS] = load_svg("clock-marks.svg", FALSE);
+    g_svg_handles[CLOCK_MINUTE_HAND] = load_svg("clock-minute-hand.svg", TRUE);
+    g_svg_handles[CLOCK_MINUTE_HAND_SHADOW] = load_svg("clock-minute-hand-shadow.svg", FALSE);
+    g_svg_handles[CLOCK_HOUR_HAND] = load_svg("clock-hour-hand.svg", TRUE);
+    g_svg_handles[CLOCK_HOUR_HAND_SHADOW] = load_svg("clock-hour-hand-shadow.svg", FALSE);
+    g_svg_handles[CLOCK_GLASS] = load_svg("clock-glass.svg", FALSE);
+    g_svg_handles[CLOCK_FRAME] = load_svg("clock-frame.svg", FALSE);
+
+    if (!dont_show_seconds) {
+        g_svg_handles[CLOCK_SECOND_HAND] = load_svg("clock-second-hand.svg", FALSE);
+        g_svg_handles[CLOCK_SECOND_HAND_SHADOW] = load_svg("clock-second-hand-shadow.svg", FALSE);
+    }
+
+    // Get intrinsic size from drop shadow; keep the 100x100 cairo-clock default
+    // if the SVG has no usable intrinsic size
+    if (g_svg_handles[CLOCK_DROP_SHADOW]) {
+        gdouble w = 0.0, h = 0.0;
+        if (rsvg_handle_get_intrinsic_size_in_pixels(g_svg_handles[CLOCK_DROP_SHADOW], &w, &h) && w >= 1.0 &&
+            h >= 1.0) {
+            theme_width = (int)ceil(w);
+            theme_height = (int)ceil(h);
+        } else {
+            g_warning("Theme drop shadow has no usable intrinsic size, assuming %dx%d", theme_width, theme_height);
+        }
+    }
+
+    svgs_loaded = TRUE;
+}
+
+// Frame-synced redraw driven by the widget's frame clock, throttled to refresh_rate
+static gboolean tick(GtkWidget *widget, GdkFrameClock *frame_clock, gpointer user_data) {
+    static gint64 last_redraw;
+    gint64 now = gdk_frame_clock_get_frame_time(frame_clock);
+    if (now - last_redraw >= G_USEC_PER_SEC / refresh_rate) {
+        last_redraw = now;
+        gtk_widget_queue_draw(widget);
+    }
+    return G_SOURCE_CONTINUE;
 }
 
 static void load_transparent_css(void) {
@@ -96,19 +147,14 @@ static void load_transparent_css(void) {
     g_object_unref(provider);
 }
 
-// Create cached background texture (called once per size change)
-static void ensure_bg_cache(int width, int height) {
-    if (bg_cache_texture && width == bg_cache_w && height == bg_cache_h) {
-        return;  // Already cached at this size
+// Render a group of static theme layers into a texture at device-pixel resolution
+static GdkTexture *render_layers_texture(const LayerElement *layers, size_t n_layers, int device_w, int device_h) {
+    // Create a Cairo surface to render the layers
+    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, device_w, device_h);
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface);
+        return NULL;
     }
-
-    if (bg_cache_texture) {
-        g_object_unref(bg_cache_texture);
-        bg_cache_texture = NULL;
-    }
-
-    // Create a Cairo surface to render the background
-    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
     cairo_t *cr = cairo_create(surface);
 
     // Clear to transparent
@@ -116,25 +162,20 @@ static void ensure_bg_cache(int width, int height) {
     cairo_paint(cr);
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
-    // Scale and render all static background layers
-    cairo_save(cr);
-    double sx = (double)width / clock_width;
-    double sy = (double)height / clock_height;
-    cairo_scale(cr, sx, sy);
+    // Scale and render the static layers
+    cairo_scale(cr, (double)device_w / theme_width, (double)device_h / theme_height);
 
-    RsvgRectangle viewport = {0.0, 0.0, (double)clock_width, (double)clock_height};
+    RsvgRectangle viewport = {0.0, 0.0, (double)theme_width, (double)theme_height};
 
-    static const LayerElement bg_layers[] = {CLOCK_DROP_SHADOW, CLOCK_FACE,  CLOCK_MARKS,
-                                             CLOCK_FACE_SHADOW, CLOCK_GLASS, CLOCK_FRAME};
-
-    for (size_t i = 0; i < sizeof(bg_layers) / sizeof(bg_layers[0]); i++) {
-        if (g_svg_handles[bg_layers[i]]) {
-            rsvg_handle_render_document(g_svg_handles[bg_layers[i]], cr, &viewport, NULL);
+    for (size_t i = 0; i < n_layers; i++) {
+        if (g_svg_handles[layers[i]]) {
+            rsvg_handle_render_document(g_svg_handles[layers[i]], cr, &viewport, NULL);
         }
     }
 
-    cairo_restore(cr);
     cairo_destroy(cr);
+    // Finish pending drawing before accessing the pixel data directly
+    cairo_surface_flush(surface);
 
     // Convert Cairo surface to GdkTexture
     GBytes *bytes =
@@ -142,13 +183,39 @@ static void ensure_bg_cache(int width, int height) {
                                    cairo_image_surface_get_height(surface) * cairo_image_surface_get_stride(surface),
                                    (GDestroyNotify)cairo_surface_destroy, surface);
 
-    bg_cache_texture =
-        gdk_memory_texture_new(width, height, GDK_MEMORY_DEFAULT, bytes, cairo_image_surface_get_stride(surface));
+    GdkTexture *texture =
+        gdk_memory_texture_new(device_w, device_h, GDK_MEMORY_DEFAULT, bytes, cairo_image_surface_get_stride(surface));
 
     g_bytes_unref(bytes);
+    return texture;
+}
 
-    bg_cache_w = width;
-    bg_cache_h = height;
+// Create cached background/foreground textures (called once per size or scale-factor change)
+static void ensure_layer_caches(GtkWidget *widget, int width, int height) {
+    int scale = gtk_widget_get_scale_factor(widget);
+
+    if (bg_cache_texture && fg_cache_texture && width == cache_w && height == cache_h && scale == cache_scale) {
+        return;  // Already cached at this size
+    }
+
+    g_clear_object(&bg_cache_texture);
+    g_clear_object(&fg_cache_texture);
+
+    // Render at device pixels so the textures stay sharp on HiDPI displays
+    int device_w = width * scale;
+    int device_h = height * scale;
+
+    // Static layers below the hands
+    static const LayerElement bg_layers[] = {CLOCK_DROP_SHADOW, CLOCK_FACE, CLOCK_MARKS};
+    // Static layers above the hands
+    static const LayerElement fg_layers[] = {CLOCK_FACE_SHADOW, CLOCK_GLASS, CLOCK_FRAME};
+
+    bg_cache_texture = render_layers_texture(bg_layers, G_N_ELEMENTS(bg_layers), device_w, device_h);
+    fg_cache_texture = render_layers_texture(fg_layers, G_N_ELEMENTS(fg_layers), device_w, device_h);
+
+    cache_w = width;
+    cache_h = height;
+    cache_scale = scale;
 }
 
 // Custom widget snapshot function - optimized version
@@ -159,42 +226,13 @@ static void clock_widget_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     if (width <= 0 || height <= 0)
         return;
 
-    // Load SVGs once
-    static gboolean svgs_loaded = FALSE;
-    if (!svgs_loaded) {
-        g_svg_handles[CLOCK_DROP_SHADOW] = load_svg("clock-drop-shadow.svg", TRUE);
-        g_svg_handles[CLOCK_FACE] = load_svg("clock-face.svg", TRUE);
-        g_svg_handles[CLOCK_FACE_SHADOW] = load_svg("clock-face-shadow.svg", FALSE);
-        g_svg_handles[CLOCK_MARKS] = load_svg("clock-marks.svg", FALSE);
-        g_svg_handles[CLOCK_MINUTE_HAND] = load_svg("clock-minute-hand.svg", TRUE);
-        g_svg_handles[CLOCK_MINUTE_HAND_SHADOW] = load_svg("clock-minute-hand-shadow.svg", FALSE);
-        g_svg_handles[CLOCK_HOUR_HAND] = load_svg("clock-hour-hand.svg", TRUE);
-        g_svg_handles[CLOCK_HOUR_HAND_SHADOW] = load_svg("clock-hour-hand-shadow.svg", FALSE);
-        g_svg_handles[CLOCK_GLASS] = load_svg("clock-glass.svg", FALSE);
-        g_svg_handles[CLOCK_FRAME] = load_svg("clock-frame.svg", FALSE);
+    // Ensure background/foreground caches are ready
+    ensure_layer_caches(widget, width, height);
 
-        if (!dont_show_seconds) {
-            g_svg_handles[CLOCK_SECOND_HAND] = load_svg("clock-second-hand.svg", FALSE);
-            g_svg_handles[CLOCK_SECOND_HAND_SHADOW] = load_svg("clock-second-hand-shadow.svg", FALSE);
-        }
-
-        // Get intrinsic size from drop shadow
-        if (g_svg_handles[CLOCK_DROP_SHADOW]) {
-            gdouble w, h;
-            rsvg_handle_get_intrinsic_size_in_pixels(g_svg_handles[CLOCK_DROP_SHADOW], &w, &h);
-            clock_width = (int)ceil(w);
-            clock_height = (int)ceil(h);
-        }
-
-        svgs_loaded = TRUE;
-    }
-
-    // Ensure background cache is ready
-    ensure_bg_cache(width, height);
+    graphene_rect_t bounds = GRAPHENE_RECT_INIT(0, 0, width, height);
 
     // Draw cached background texture (fast!)
     if (bg_cache_texture) {
-        graphene_rect_t bounds = GRAPHENE_RECT_INIT(0, 0, width, height);
         gtk_snapshot_append_texture(snapshot, bg_cache_texture, &bounds);
     }
 
@@ -220,22 +258,21 @@ static void clock_widget_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     double angle_sec_rad = angle_second * (M_PI / 180.0);
 
     // Draw hands using Cairo (only 6 small SVGs per frame)
-    graphene_rect_t hand_bounds = GRAPHENE_RECT_INIT(0, 0, width, height);
-    cairo_t *cr = gtk_snapshot_append_cairo(snapshot, &hand_bounds);
+    cairo_t *cr = gtk_snapshot_append_cairo(snapshot, &bounds);
 
     cairo_save(cr);
-    double sx = (double)width / clock_width;
-    double sy = (double)height / clock_height;
+    double sx = (double)width / theme_width;
+    double sy = (double)height / theme_height;
     cairo_translate(cr, width / 2.0, height / 2.0);
     cairo_scale(cr, sx, sy);
     cairo_rotate(cr, -M_PI / 2.0);
 
-    RsvgRectangle viewport = {0.0, 0.0, (double)clock_width, (double)clock_height};
+    RsvgRectangle viewport = {0.0, 0.0, (double)theme_width, (double)theme_height};
 
     // Hour hand shadow
     if (g_svg_handles[CLOCK_HOUR_HAND_SHADOW]) {
         cairo_save(cr);
-        cairo_translate(cr, 1, 1);
+        cairo_translate(cr, SHADOW_OFFSET_X, SHADOW_OFFSET_Y);
         cairo_rotate(cr, angle_hour_rad);
         rsvg_handle_render_document(g_svg_handles[CLOCK_HOUR_HAND_SHADOW], cr, &viewport, NULL);
         cairo_restore(cr);
@@ -244,7 +281,7 @@ static void clock_widget_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     // Minute hand shadow
     if (g_svg_handles[CLOCK_MINUTE_HAND_SHADOW]) {
         cairo_save(cr);
-        cairo_translate(cr, 1, 1);
+        cairo_translate(cr, SHADOW_OFFSET_X, SHADOW_OFFSET_Y);
         cairo_rotate(cr, angle_min_rad);
         rsvg_handle_render_document(g_svg_handles[CLOCK_MINUTE_HAND_SHADOW], cr, &viewport, NULL);
         cairo_restore(cr);
@@ -253,7 +290,7 @@ static void clock_widget_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
     // Second hand shadow
     if (g_svg_handles[CLOCK_SECOND_HAND_SHADOW]) {
         cairo_save(cr);
-        cairo_translate(cr, 1, 1);
+        cairo_translate(cr, SHADOW_OFFSET_X, SHADOW_OFFSET_Y);
         cairo_rotate(cr, angle_sec_rad);
         rsvg_handle_render_document(g_svg_handles[CLOCK_SECOND_HAND_SHADOW], cr, &viewport, NULL);
         cairo_restore(cr);
@@ -285,6 +322,11 @@ static void clock_widget_snapshot(GtkWidget *widget, GtkSnapshot *snapshot) {
 
     cairo_restore(cr);
     cairo_destroy(cr);
+
+    // Draw cached foreground texture (face shadow, glass, frame) above the hands
+    if (fg_cache_texture) {
+        gtk_snapshot_append_texture(snapshot, fg_cache_texture, &bounds);
+    }
 }
 
 static void clock_widget_measure(GtkWidget *widget, GtkOrientation orientation, int for_size, int *minimum,
@@ -318,6 +360,8 @@ static void save_key_file(GKeyFile *kf) {
     g_key_file_set_integer(kf, "Settings", "height", resized_height);
     g_key_file_set_string(kf, "Settings", "theme", theme);
     g_key_file_set_integer(kf, "Settings", "hz", refresh_rate);
+    g_key_file_set_boolean(kf, "Settings", "userthemes", userthemes);
+    g_key_file_set_boolean(kf, "Settings", "noseconds", dont_show_seconds);
     if (!g_key_file_save_to_file(kf, config_file, &error)) {
         g_printerr("Failed to save configuration: %s\n", error->message);
         g_clear_error(&error);
@@ -332,9 +376,11 @@ static int process_config(int argc, char **argv) {
         {"width", 'w', 0, G_OPTION_ARG_INT, &clock_width, "Width of the window", "WIDTH"},
         {"height", 'h', 0, G_OPTION_ARG_INT, &clock_height, "Height of the window", "HEIGHT"},
         {"theme", 't', 0, G_OPTION_ARG_STRING, &theme, "Theme name", "THEME"},
-        {"userthemes", 'u', 0, G_OPTION_ARG_NONE, &userthemes, "Use user theme", "USERTHEMES"},
+        {"userthemes", 'u', 0, G_OPTION_ARG_NONE, &userthemes, "Use user themes", "USERTHEMES"},
+        {"systemthemes", 's', G_OPTION_FLAG_REVERSE, G_OPTION_ARG_NONE, &userthemes, "Use system themes", NULL},
         {"hz", 'z', 0, G_OPTION_ARG_INT, &refresh_rate, "Refresh rate (hz)", "HZ"},
         {"noseconds", 'n', 0, G_OPTION_ARG_NONE, &dont_show_seconds, "Don't show second hand", "NOSECONDS"},
+        {"seconds", 'S', G_OPTION_FLAG_REVERSE, G_OPTION_ARG_NONE, &dont_show_seconds, "Show second hand", NULL},
         {NULL}
     };
 
@@ -376,6 +422,8 @@ static int process_config(int argc, char **argv) {
     refresh_rate = g_key_file_get_integer(key_file, "Settings", "hz", NULL);
     if (!refresh_rate)
         refresh_rate = 10;
+    userthemes = g_key_file_get_boolean(key_file, "Settings", "userthemes", NULL);
+    dont_show_seconds = g_key_file_get_boolean(key_file, "Settings", "noseconds", NULL);
 
     context = g_option_context_new("- Save configuration for " APP_NAME);
     g_option_context_add_main_entries(context, entries, NULL);
@@ -387,16 +435,57 @@ static int process_config(int argc, char **argv) {
     }
     g_option_context_free(context);
 
+    // Validate values from the config file and the command line
+    if (refresh_rate < 1 || refresh_rate > 240) {
+        g_printerr("Invalid refresh rate %d, using 10 hz\n", refresh_rate);
+        refresh_rate = 10;
+    }
+    if (clock_width < 100 || clock_width > 8192) {
+        g_printerr("Invalid width %d, using 400\n", clock_width);
+        clock_width = 400;
+    }
+    if (clock_height < 100 || clock_height > 8192) {
+        g_printerr("Invalid height %d, using 400\n", clock_height);
+        clock_height = 400;
+    }
+
     return 0;
 }
 
+// Capture the window size while the window still exists; reading it after
+// g_application_run() returns would be use-after-free when the compositor
+// closed (and thereby destroyed) the window
+static void capture_window_size(void) {
+    if (g_window && !size_saved) {
+        gtk_window_get_default_size(GTK_WINDOW(g_window), &resized_width, &resized_height);
+        size_saved = TRUE;
+    }
+}
+
+static gboolean on_close_request(GtkWindow *window, gpointer user_data) {
+    capture_window_size();
+    return FALSE;  // Allow the window to be destroyed
+}
+
+static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
+    capture_window_size();
+    // Clear dangling pointers so nothing touches the destroyed widgets
+    g_window = NULL;
+    g_clock_widget = NULL;
+}
+
 static void on_app_activate_cb(GtkApplication *app, gpointer user_data) {
+    // Load theme SVGs before creating the window so a missing theme fails early
+    load_all_svgs();
+
     load_transparent_css();
 
     g_window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(g_window), APP_NAME);
     gtk_window_set_decorated(GTK_WINDOW(g_window), FALSE);
     gtk_window_set_default_size(GTK_WINDOW(g_window), clock_width, clock_height);
+    g_signal_connect(g_window, "close-request", G_CALLBACK(on_close_request), NULL);
+    g_signal_connect(g_window, "destroy", G_CALLBACK(on_window_destroy), NULL);
 
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_window_set_child(GTK_WINDOW(g_window), box);
@@ -412,7 +501,8 @@ static void on_app_activate_cb(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_visible(box, TRUE);
 
     g_clock_timer = g_timer_new();
-    g_timeout_add(1000 / refresh_rate, tick, NULL);
+    // Frame-synced redraws; the callback is removed automatically when the widget is destroyed
+    gtk_widget_add_tick_callback(g_clock_widget, tick, NULL, NULL);
 
     gtk_window_present(GTK_WINDOW(g_window));
 }
@@ -420,7 +510,8 @@ static void on_app_activate_cb(GtkApplication *app, gpointer user_data) {
 int main(int argc, char **argv) {
     tzset();
 
-    GtkApplication *app = gtk_application_new(APP_NAME ".CairoClock", G_APPLICATION_DEFAULT_FLAGS);
+    // NON_UNIQUE allows running multiple independent instances
+    GtkApplication *app = gtk_application_new(APP_NAME ".CairoClock", G_APPLICATION_NON_UNIQUE);
     GSimpleAction *quit_action = g_simple_action_new("quit", NULL);
     g_signal_connect(quit_action, "activate", G_CALLBACK(on_quit_action), app);
     g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(quit_action));
@@ -436,9 +527,14 @@ int main(int argc, char **argv) {
 
     int status = g_application_run(G_APPLICATION(app), argc, argv);
 
+    // If the window still exists (e.g. quit via Ctrl+Q), capture its size now and
+    // destroy it for a clean shutdown; otherwise the size was already captured in
+    // the close-request/destroy handlers
+    capture_window_size();
     if (g_window) {
-        gtk_window_get_default_size(GTK_WINDOW(g_window), &resized_width, &resized_height);
-    } else {
+        gtk_window_destroy(GTK_WINDOW(g_window));
+    }
+    if (!size_saved) {
         resized_width = clock_width;
         resized_height = clock_height;
     }
@@ -454,11 +550,9 @@ int main(int argc, char **argv) {
     g_free(config_dir);
     g_free(config_file);
 
-    // Cleanup cached texture
-    if (bg_cache_texture) {
-        g_object_unref(bg_cache_texture);
-        bg_cache_texture = NULL;
-    }
+    // Cleanup cached textures
+    g_clear_object(&bg_cache_texture);
+    g_clear_object(&fg_cache_texture);
 
     // Cleanup all RsvgHandles
     for (int i = 0; i < CLOCK_ELEMENTS; i++) {
