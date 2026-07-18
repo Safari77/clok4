@@ -3,7 +3,7 @@
 project(
   'clok4',
   'c',
-  version : '0.4.2',
+  version : '0.4.3',
   license : 'GPL-2.0-or-later',
   meson_version: '>= 1.0.0',
   default_options : [
@@ -40,3 +40,10 @@ exe = executable(
   install : true  # installs into bin/ by default
 )
 
+conf_data = configuration_data()
+conf_data.set_quoted('PROJECT_VERSION', meson.project_version())
+configure_file(
+  input: 'config.h.in',
+  output: 'config.h',
+  configuration: conf_data
+)

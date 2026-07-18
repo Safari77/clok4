@@ -7,6 +7,8 @@
 #include <gtk/gtk.h>
 #include <librsvg/rsvg.h>
 
+#include "config.h"
+
 // GTK4 clock using Cairo, based on GTK2 cairo-clock by Mirco "MacSlow" Müller (2006)
 // Copyright 2025 Sami Farin
 //
@@ -372,6 +374,7 @@ static int process_config(int argc, char **argv) {
     GOptionContext *context;
     GError *error = NULL;
     gchar *newtheme;
+    gboolean show_version = FALSE;
     GOptionEntry entries[] = {
         {"width", 'w', 0, G_OPTION_ARG_INT, &clock_width, "Width of the window", "WIDTH"},
         {"height", 'h', 0, G_OPTION_ARG_INT, &clock_height, "Height of the window", "HEIGHT"},
@@ -381,6 +384,7 @@ static int process_config(int argc, char **argv) {
         {"hz", 'z', 0, G_OPTION_ARG_INT, &refresh_rate, "Refresh rate (hz)", "HZ"},
         {"noseconds", 'n', 0, G_OPTION_ARG_NONE, &dont_show_seconds, "Don't show second hand", "NOSECONDS"},
         {"seconds", 'S', G_OPTION_FLAG_REVERSE, G_OPTION_ARG_NONE, &dont_show_seconds, "Show second hand", NULL},
+        {"version", 'v', 0, G_OPTION_ARG_NONE, &show_version, "Show application version and exit", NULL},
         {NULL}
     };
 
@@ -434,6 +438,11 @@ static int process_config(int argc, char **argv) {
         return 1;
     }
     g_option_context_free(context);
+
+    if (show_version) {
+        g_print("%s version %s\n", APP_NAME, PROJECT_VERSION);
+        exit(0);
+    }
 
     // Validate values from the config file and the command line
     if (refresh_rate < 1 || refresh_rate > 240) {
